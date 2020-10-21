@@ -1,0 +1,165 @@
+---
+title: "Volatility and Informativeness"
+author: "Eduardo Davila^[Yale] & Cecilia Parlatore^[NYU Stern]"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r echo=FALSE, include=FALSE}
+
+library(here); library(tidyverse);library(kableExtra); options(dplyr.summarise.inform = F)
+path <- here::here(); print(path); setwd(path); rm(path)
+
+load("intermediate/results_rolling_clean.RData")
+
+```
+
+# Computing variables
+
+```{r}
+
+results <- results_rolling_q %>%
+  mutate(beta_1_norm   = beta_1/(1 - beta_1),
+         tau_pi_R_norm = tau_pi_R/(1 - tau_pi_R),
+         tau_s_tau_u   = beta_1_norm - tau_pi_R_norm,
+         tau_n_tau_u   = tau_s_tau_u**(-2)*tau_pi_R_norm) %>%
+  mutate(region = case_when(tau_n_tau_u >= (sqrt(1 + 8*tau_s_tau_u) - 1 + 2*tau_s_tau_u)/(2*tau_s_tau_u^2) ~ 1,
+                           tau_n_tau_u < pmin(1,
+                                             (tau_s_tau_u - 2 + sqrt((2 - tau_s_tau_u)^2 + 8*tau_s_tau_u^2))/(4*tau_s_tau_u^2),
+                                             (tau_s_tau_u - 1 + sqrt(5*tau_s_tau_u^2   - 2*tau_s_tau_u + 1))/(2*tau_s_tau_u^2)) ~ -1,
+                           TRUE ~ 0)) %>% 
+  filter(beta_1 > 0 & beta_1 < 1) %>% 
+  filter(beta_1 > tau_pi_R)
+
+summary_region <- results %>% 
+  summarize(pos  = sum(region >  0)/n(),
+            neg  = sum(region <  0)/n(),
+            zero = sum(region == 0)/n())
+
+summary_by_year <- results %>% 
+  group_by(year_end) %>%  
+  summarize(pos  = sum(region >  0)/n(),
+            neg  = sum(region <  0)/n(),
+            zero = sum(region == 0)/n(),
+            n_year = n())
+
+summary_by_decade <- results %>%
+  mutate(decade = case_when(year_end >= 1970 & year_end < 1979.99 ~ "1970",
+                            year_end >= 1980 & year_end < 1989.99 ~ "1980",
+                            year_end >= 1990 & year_end < 1999.99 ~ "1990",
+                            year_end >= 2000 & year_end < 2009.99 ~ "2000",
+                            year_end >= 2010 & year_end < 2019.99 ~ "2010",
+                            FALSE ~ "NA")) %>% 
+  group_by(decade) %>%  
+  summarize(pos  = sum(region >  0)/n(),
+            neg  = sum(region <  0)/n(),
+            zero = sum(region == 0)/n(),
+            n_year = n())
+
+directory <- "output"
+colnames(summary_by_decade) <- c("Decade", "Positive Share ", "Negative Share", "Ambiguous Share", "Total")
+
+namefile <- "summary_by_decade"
+kab      <- kable(summary_by_decade, "latex", booktabs = T, digits = 2, align = rep('c', length(summary_by_decade[ ,1])))
+path     <- paste(directory, "/", namefile, ".tex", sep = "")
+fileConn <- file(path); writeLines(kab, fileConn); close(fileConn)
+
+```
+
+# Loop
+
+```{r}
+
+year  <- seq(1984, 2008, .25)
+names <- c("threshold_date", "cmvmtpos", "poscount", "cmvmtneg", "negcount", "cmvmtzero", "zerocount")
+
+summary_both   <- setNames(data.frame(matrix(ncol = length(names), nrow = length(year))), names)
+summary_before <- setNames(data.frame(matrix(ncol = length(names), nrow = length(year))), names)
+
+for (i in 1:length(year)) {
+
+  cutoff_date <- year[i]
+
+  results_before <- results %>% 
+    filter(datefrac_end >= cutoff_date & datefrac_end < cutoff_date + 0.24) %>% 
+    summarize(permno             = permno,
+              tau_pi_before      = tau_pi,
+              cond_vol_before    = cond_vol,
+              tau_s_tau_u_before = tau_s_tau_u,
+              tau_n_tau_u_before = tau_n_tau_u,
+              region_before      = region)
+                  
+  results_after <- results %>% 
+    filter(datefrac_start >= cutoff_date & datefrac_start < cutoff_date + 0.24) %>% 
+    summarize(permno            = permno,
+              tau_pi_after      = tau_pi,
+              cond_vol_after    = cond_vol,
+              tau_s_tau_u_after = tau_s_tau_u,
+              tau_n_tau_u_after = tau_n_tau_u,
+              region_after      = region)
+                  
+  results_final <- inner_join(results_before, results_after, by = 'permno') %>%  
+    summarize(permno        = permno,
+              tau_pi_diff   = tau_pi_after   - tau_pi_before,
+              cond_vol_diff = cond_vol_after - cond_vol_before,
+              region_after  = region_after,
+              region_before = region_before)
+  
+  df_final <- results_final %>% 
+    mutate(region_both    = 1*(region_before == 1 & region_after == 1) - 1*(region_before == -1 & region_after == -1),
+           region_before  = 1*(region_before == 1) - 1*(region_before == -1)) %>% 
+    mutate(comovement = 1*(tau_pi_diff*cond_vol_diff > 0))
+  
+  table_comp_both <- df_final %>% group_by(region_both) %>% summarize(mean_comovement = mean(comovement),n = n())
+  
+  cmvmtpos  <- table_comp_both$mean_comovement[table_comp_both$region_both == 1]
+  cmvmtpos  <- ifelse(length(cmvmtpos) == 0, NA, cmvmtpos)
+  poscount  <- table_comp_both$n[table_comp_both$region_both == 1]
+  poscount  <- ifelse(length(poscount) == 0, NA, poscount)
+  cmvmtneg  <- table_comp_both$mean_comovement[table_comp_both$region_both == -1]
+  cmvmtneg  <- ifelse(length(cmvmtneg) == 0, NA, cmvmtneg)
+  negcount  <- table_comp_both$n[table_comp_both$region_both == -1]
+  negcount  <- ifelse(length(negcount) == 0, NA, negcount)
+  cmvmtzero <- table_comp_both$mean_comovement[table_comp_both$region_both == 0]
+  cmvmtzero <- ifelse(length(cmvmtzero) == 0, NA, cmvmtzero)
+  zerocount <- table_comp_both$n[table_comp_both$region_both == 0]
+  zerocount <- ifelse(length(zerocount) == 0, NA, zerocount)
+  
+  summary_both[i,] <- c(cutoff_date, cmvmtpos, poscount, cmvmtneg, negcount, cmvmtzero, zerocount)
+
+}
+
+namefile <- "summ_both_single_cut"
+kab      <- kable(summary_both, "latex", booktabs = T)
+path     <- paste(directory, "/", namefile, ".tex", sep = "")
+fileConn <- file(path); writeLines(kab, fileConn); close(fileConn)
+
+```
+
+# Summarizing
+
+```{r}
+
+both <- summary_both %>%
+  mutate(decade = case_when(threshold_date >= 1980 & threshold_date < 1989.99 ~ "1980",
+                            threshold_date >= 1990 & threshold_date < 1999.99 ~ "1990",
+                            threshold_date >= 2000 & threshold_date < 2009.99 ~ "2000",
+                            FALSE ~ "NA")) %>% 
+  group_by(decade) %>% 
+  summarize(cmvmtpos_mean  = weighted.mean(cmvmtpos,  poscount, na.rm = T),
+            poscount       = sum(poscount, na.rm = T),
+            cmvmtneg_mean  = weighted.mean(cmvmtneg,  negcount, na.rm = T),
+            negcount       = sum(negcount, na.rm = T),
+            cmvmtzero_mean = weighted.mean(cmvmtzero, zerocount, na.rm = T),
+            zerocount      = sum(zerocount, na.rm = T))
+
+colnames(both)   <- c("Decade", "Positive/Positive", "N Positive", "Positive/Negative", "N Negative", "Positive/Ambiguous", "N Ambiguous")
+
+namefile <- "summ_both_single_cut_agg"
+kab      <- kable(both, "latex", booktabs = T, digits = 2, align = rep('c', length(both[ ,1])))
+path     <- paste(directory, "/", namefile, ".tex", sep = "")
+fileConn <- file(path); writeLines(kab, fileConn); close(fileConn)
+
+```

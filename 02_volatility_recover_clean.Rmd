@@ -1,0 +1,55 @@
+---
+title: "Volatility and Informativeness"
+author: "Eduardo Davila^[Yale] & Cecilia Parlatore^[NYU Stern]"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r echo=FALSE, include=FALSE}
+
+library(here); library(tidyverse); library(foreach); library(doParallel); library(AER)
+path <- here::here(); print(path); setwd(path); rm(path)
+
+source("functions/fn_remove_outliers.R")
+
+load("input/data_selected.RData")
+load("intermediate/results_rolling.RData")
+
+out_threshold     <- 0.95
+outlier           <- TRUE
+contiguous        <- TRUE
+
+```
+
+We can filter stocks based on the highest *leverage score*.
+We can filter stocks so that they have contiguous observations
+
+```{r}
+
+if (outlier == TRUE) {
+  
+  results_rolling_q_outlier <- remove_outliers(results_rolling_q, out_threshold)
+
+}
+
+if (contiguous == TRUE) {
+  
+  results_rolling_q_clean <- results_rolling_q_outlier %>%
+    mutate(datefrac_start = year_start + month_start/12,
+           datefrac_end   = year_end   + month_end/12, 
+           date_dif       = datefrac_end - datefrac_start) %>% 
+    filter(date_dif == N_q/4 - 0.25)
+  
+}
+
+n_permno_q_before_outlier_q <- length(unique(results_rolling_q$permno))
+n_permno_q_after_outlier_q  <- length(unique(results_rolling_q_outlier$permno))
+n_permno_q_clean            <- length(unique(results_rolling_q_clean$permno))
+
+results_rolling_q <- results_rolling_q_clean
+
+save(results_rolling_q, file = "intermediate/results_rolling_clean.RData")
+
+```
